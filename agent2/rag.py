@@ -9,6 +9,7 @@ def process_file(
     input_file: str,
     rag_store: ChromaRAGStore,
     output_file: str | None = None,
+    subject: str = "sql",
 ) -> list[StoreResult]:
     rows = load_questions_from_file(input_file)
     if not rows:
@@ -17,7 +18,7 @@ def process_file(
     enriched_results = []
     store_results: list[StoreResult] = []
     for qid, raw_question in rows:
-        enriched = enrich_question(qid, raw_question)
+        enriched = enrich_question(qid, raw_question, subject)
         enriched_results.append(enriched)
         store_results.append(rag_store.add_or_flag_duplicate(qid, raw_question, enriched.enriched_text))
 

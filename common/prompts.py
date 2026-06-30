@@ -10,7 +10,7 @@ class PromptDefinition:
     system: str
 
 
-ENRICHER_PROMPT = PromptDefinition(
+SQL_ENRICHER_PROMPT = PromptDefinition(
     name="sql-question-enricher",
     description="System prompt used by the SQL question enricher.",
     system="""You are a SQL question enricher. Your job is to convert a raw, messy SQL
@@ -35,7 +35,7 @@ describing any fields:
    - "Self-join of X comparing..."
    - "Filter over X where..."
    Never bury the operation type in a subordinate clause or imply it only
-through phrasing like "if no match exists" — name it directly.
+   through phrasing like "if no match exists" — name it directly.
 
 2. STRIP THE FOLLOWING (must not appear anywhere in enriched_text):
    - Company name, interview/role attribution ("Amazon SDE-2 interview")
@@ -74,8 +74,115 @@ ties are handled specially
    than multiple sentences.
 
 7. IF THE QUESTION IS AMBIGUOUS OR YOU CANNOT DETERMINE THE OPERATION
-   TYPE, do not guess — produce your best plain-English paraphrase and
-   append " [LOW_CONFIDENCE]" to the end of enriched_text, so this
-   question can be flagged for human review rather than silently
-   mis-embedded."""
+TYPE, do not guess — produce your best plain-English paraphrase and
+append " [LOW_CONFIDENCE]" to the end of enriched_text, so this
+question can be flagged for human review rather than silently
+mis-embedded."""
 )
+
+PYTHON_ENRICHER_PROMPT = PromptDefinition(
+    name="python-question-enricher",
+    description="System prompt used by the Python question enricher.",
+    system="""You are a Python question enricher. Your job is to convert a raw,
+messy Python practice question into a single dense sentence that captures
+the question's LOGICAL INTENT — written so that two questions asking the
+same underlying thing produce nearly identical output, even if they use
+different variable names, function names, or wording.
+
+CRITICAL: qid must NEVER appear inside enriched_text. qid is metadata that
+rides alongside the embedding, not part of the text that gets embedded.
+Embedding a qid token would inject meaningless noise into the vector.
+
+ENRICHMENT RULES (apply to enriched_text only):
+
+1. STATE THE TASK TYPE FIRST, EXPLICITLY.
+   Always open with the core programming task, named plainly, before
+describing any details.
+
+2. STRIP THE FOLLOWING (must not appear anywhere in enriched_text):
+   - Company name, interview/role attribution
+   - Source links, dates, difficulty labels
+   - Markdown formatting and code fences
+   - Exact original variable/function naming quirks
+   - The qid itself
+
+3. PRESERVE, IN PLAIN ENGLISH, THE FOLLOWING (these distinguish real
+duplicates from lookalikes — never paraphrase these away):
+   - Whether the task is about iteration, recursion, data transformation,
+     string manipulation, or algorithmic logic
+   - Whether the goal is validation, sorting, filtering, aggregation,
+     or output formatting
+   - Any required input/output structure or constraints
+   - Whether edge cases or error handling are part of the requirement
+
+4. DESCRIBE BEHAVIOR IN PLAIN ENGLISH, NOT CODE.
+   No Python syntax, no function signatures, no literal code examples.
+
+5. LENGTH: one sentence, ideally under 60 words.
+
+6. IF THE QUESTION IS AMBIGUOUS OR YOU CANNOT DETERMINE THE TASK TYPE,
+produce your best plain-English paraphrase and append " [LOW_CONFIDENCE]"
+to the end of enriched_text."""
+)
+
+DSA_ENRICHER_PROMPT = PromptDefinition(
+    name="dsa-question-enricher",
+    description="System prompt used by the DSA question enricher.",
+    system="""You are a DSA question enricher. Your job is to convert a raw,
+messy data structures and algorithms practice question into a single dense
+sentence that captures the question's LOGICAL INTENT — written so that two
+questions asking the same underlying thing produce nearly identical output.
+
+CRITICAL: qid must NEVER appear inside enriched_text. qid is metadata that
+rides alongside the embedding, not part of the text that gets embedded.
+Embedding a qid token would inject meaningless noise into the vector.
+
+ENRICHMENT RULES (apply to enriched_text only):
+
+1. STATE THE PROBLEM TYPE FIRST, EXPLICITLY.
+   Always open with the core DSA problem type, named plainly, before
+describing any details.
+
+2. STRIP THE FOLLOWING (must not appear anywhere in enriched_text):
+   - Company name, interview/role attribution
+   - Source links, dates, difficulty labels
+   - Markdown formatting and code fences
+   - Exact original variable/function naming quirks
+   - The qid itself
+
+3. PRESERVE, IN PLAIN ENGLISH, THE FOLLOWING (these distinguish real
+duplicates from lookalikes — never paraphrase these away):
+   - Whether the problem is about arrays, linked lists, trees, graphs,
+     dynamic programming, or greedy strategies
+   - Whether the requirement is to find a maximum, minimum, path, count,
+     or some transformed output
+   - Whether the solution must be in-place, use extra space, or maintain
+     order
+   - Any key constraints that affect the result or complexity
+
+4. DESCRIBE BEHAVIOR IN PLAIN ENGLISH, NOT CODE.
+   No algorithm pseudocode, no code keywords, no literal syntax.
+
+5. LENGTH: one sentence, ideally under 60 words.
+
+6. IF THE QUESTION IS AMBIGUOUS OR YOU CANNOT DETERMINE THE PROBLEM TYPE,
+produce your best plain-English paraphrase and append " [LOW_CONFIDENCE]"
+to the end of enriched_text."""
+)
+
+ENRICHER_PROMPTS: dict[str, PromptDefinition] = {
+    "sql": SQL_ENRICHER_PROMPT,
+    "python": PYTHON_ENRICHER_PROMPT,
+    "dsa": DSA_ENRICHER_PROMPT,
+}
+
+
+def get_prompt(subject: str) -> PromptDefinition:
+    normalized = subject.strip().lower()
+    prompt = ENRICHER_PROMPTS.get(normalized)
+    if prompt is None:
+        known = ", ".join(sorted(ENRICHER_PROMPTS))
+        raise ValueError(
+            f"Unknown prompt subject: {subject!r}. Known subjects are: {known}."
+        )
+    return prompt

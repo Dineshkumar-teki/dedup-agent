@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 import streamlit as st
 
+DEFAULT_SUBJECTS = ["sql", "python", "dsa"]
+
 if TYPE_CHECKING:
     from agent2.storage import ChromaRAGStore, StoreResult
 
@@ -82,16 +84,66 @@ def get_uploaded_file_source(uploaded_file):
     return buffer, file_name
 
 
-def get_rag_store() -> Any:
+def get_available_subjects() -> list[str]:
+    subjects = set(DEFAULT_SUBJECTS)
+    if agent_import_error is not None:
+        return sorted(subjects)
+
+    try:
+        probe = ChromaRAGStore.for_subject(DEFAULT_SUBJECTS[0], persist_dir="chroma_db")
+        subjects.update(probe.list_subjects())
+    except Exception:
+        pass
+
+    return sorted(subjects)
+
+
+def get_rag_store(subject: str, threshold: float) -> Any:
     if agent_import_error is not None:
         st.error(
             "Backend imports failed: {}. Install dependencies and run again.".format(agent_import_error)
         )
         return None
 
-    if "rag_store" not in st.session_state:
-        st.session_state["rag_store"] = ChromaRAGStore(persist_dir="chroma_db")
-    return st.session_state["rag_store"]
+    if "rag_stores" not in st.session_state:
+        st.session_state["rag_stores"] = {}
+
+    subject_key = subject.strip().lower()
+    store_key = (subject_key, threshold)
+    if store_key not in st.session_state["rag_stores"]:
+        st.session_state["rag_stores"][store_key] = ChromaRAGStore.for_subject(
+            subject_key,
+            persist_dir="chroma_db",
+            duplicate_distance_threshold=threshold,
+        )
+    return st.session_state["rag_stores"][store_key]
+
+
+def format_error(exc: Exception) -> str:
+    lower_message = str(exc).lower()
+    if "api_key" in lower_message or "credential" in lower_message:
+        return "Missing or invalid API credentials. Check your API key and environment settings."
+    if isinstance(exc, ValueError):
+        return str(exc)
+    network_indicators = ["network", "connection", "timeout", "unreachable"]
+    if any(token in lower_message for token in network_indicators):
+        return "Network error occurred. Check your internet connection and retry."
+    return str(exc)
+
+
+def highlight_status(row: pd.Series) -> list[str]:
+    status = str(row.get("Status", "")).lower()
+    if status == "duplicate":
+        color = "background-color: #f8d7da"
+    elif status == "stored":
+        color = "background-color: #d4edda"
+    elif status == "qid_conflict":
+        color = "background-color: #fff3cd"
+    elif status == "already_stored":
+        color = "background-color: #e2e3e5"
+    else:
+        color = ""
+    return [color] * len(row)
 
 
 def build_results_dataframe(rows: list[Any]) -> pd.DataFrame:
@@ -123,13 +175,37 @@ def build_results_dataframe(rows: list[Any]) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 
-def process_file(uploaded_file):
+def render_subject_selector() -> tuple[str, float]:
+    st.header("Subject")
+    available_subjects = get_available_subjects()
+    selected_subject = st.selectbox("Select a subject", options=available_subjects, index=0)
+    threshold = st.slider(
+        "Duplicate sensitivity",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.25,
+        step=0.01,
+    )
+
+    new_subject = st.text_input("Add a custom subject", value="")
+    if st.button("Register subject") and new_subject.strip():
+        try:
+            selected_subject = new_subject.strip().lower()
+            get_rag_store(selected_subject, threshold)
+            st.success(f"Registered new subject: {selected_subject}")
+        except Exception as exc:
+            st.error(f"Failed to register subject: {format_error(exc)}")
+
+    return selected_subject, threshold
+
+
+def process_file(uploaded_file, subject: str, threshold: float):
     upload_source, file_name = get_uploaded_file_source(uploaded_file)
     if upload_source is None:
         st.warning("Please select a file before clicking Process File.")
         return None
 
-    rag_store = get_rag_store()
+    rag_store = get_rag_store(subject, threshold)
     if rag_store is None:
         return None
 
@@ -139,7 +215,8 @@ def process_file(uploaded_file):
             temp_path = save_uploaded_file_to_temp(upload_source)
         else:
             temp_path = save_uploaded_file_to_temp(upload_source)
-        results = process_rag_file(str(temp_path), rag_store)
+        with st.spinner("Enriching and checking questions..."):
+            results = process_rag_file(str(temp_path), rag_store, subject=subject)
         st.session_state["last_results"] = [
             {
                 "qid": item.qid,
@@ -155,16 +232,17 @@ def process_file(uploaded_file):
         st.session_state["last_error"] = None
         return build_results_dataframe(results)
     except Exception as exc:
-        st.error(f"Failed to process file: {exc}")
+        message = format_error(exc)
+        st.error(f"Failed to process file: {message}")
         st.session_state["last_status"] = "error"
-        st.session_state["last_error"] = str(exc)
+        st.session_state["last_error"] = message
         return None
     finally:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink(missing_ok=True)
 
 
-def process_manual_entry(question_id: str, question_text: str, allow_duplicate: bool = False):
+def process_manual_entry(question_id: str, question_text: str, subject: str, threshold: float, allow_duplicate: bool = False):
     if not question_id.strip():
         st.warning("Question ID is empty")
         return None
@@ -172,32 +250,34 @@ def process_manual_entry(question_id: str, question_text: str, allow_duplicate: 
         st.warning("Question text is empty")
         return None
 
-    rag_store = get_rag_store()
+    rag_store = get_rag_store(subject, threshold)
     if rag_store is None:
         return None
 
     try:
-        enriched = enrich_question(question_id.strip(), question_text.strip())
-        store_result = rag_store.add_or_flag_duplicate(
-            question_id.strip(),
-            question_text.strip(),
-            enriched.enriched_text,
-            allow_duplicate=allow_duplicate,
-        )
+        with st.spinner("Checking question..."):
+            enriched = enrich_question(question_id.strip(), question_text.strip(), subject)
+            store_result = rag_store.add_or_flag_duplicate(
+                question_id.strip(),
+                question_text.strip(),
+                enriched.enriched_text,
+                allow_duplicate=allow_duplicate,
+            )
         return store_result
     except Exception as exc:
-        st.error(f"Failed to process question: {exc}")
+        message = format_error(exc)
+        st.error(f"Failed to process question: {message}")
         return None
 
 
 def render_header() -> None:
     st.title("Question Duplicate Checker")
     st.write(
-        "Upload a file or enter a question manually to enrich, deduplicate, and store SQL questions."
+        "Provide a file or type a question to improve it, find similar existing questions, and save it for future use."
     )
 
 
-def render_file_upload_section() -> None:
+def render_file_upload_section(subject: str, threshold: float) -> None:
     st.header("File Upload")
     uploaded_file = st.file_uploader("Upload a CSV or XLSX file", type=["csv", "xlsx"])
     if uploaded_file is not None:
@@ -212,22 +292,22 @@ def render_file_upload_section() -> None:
 
     if st.button("Process File"):
         status_message.info("Waiting for backend response...")
-        df_results = process_file(uploaded_file)
+        df_results = process_file(uploaded_file, subject, threshold)
         if df_results is not None:
             status_message.success("File processed successfully.")
-            result_area.dataframe(df_results)
+            result_area.dataframe(df_results.style.apply(highlight_status, axis=1))
         else:
             status_message.error("Failed to process the file. See the message above.")
 
     if st.session_state.get("last_results"):
         if st.session_state.get("last_status") == "success":
             status_message.success("Showing last successful result from {}.".format(st.session_state.get("last_results_source")))
-            result_area.dataframe(pd.DataFrame(st.session_state["last_results"]))
+            result_area.dataframe(pd.DataFrame(st.session_state["last_results"]).style.apply(highlight_status, axis=1))
         elif st.session_state.get("last_status") == "error":
             status_message.error("Last operation failed: {}".format(st.session_state.get("last_error")))
 
 
-def render_manual_entry_section() -> None:
+def render_manual_entry_section(subject: str, threshold: float) -> None:
     st.header("Manual Question Entry")
     question_id = st.text_input("Question ID")
     question_text = st.text_area("Question")
@@ -236,8 +316,12 @@ def render_manual_entry_section() -> None:
     result_area = st.empty()
 
     if st.button("Check Question"):
+        if st.session_state.get("pending_duplicate") is not None:
+            pending_qid = st.session_state["pending_duplicate"].get("qid")
+            if pending_qid != question_id.strip():
+                st.info("Replacing previous pending duplicate check.")
         status_message.info("Checking question...")
-        result = process_manual_entry(question_id, question_text)
+        result = process_manual_entry(question_id, question_text, subject, threshold, allow_duplicate=False)
         if result is None:
             status_message.error("Unable to check the question.")
             return
@@ -255,41 +339,48 @@ def render_manual_entry_section() -> None:
             st.session_state["pending_duplicate"] = None
             status_message.success(result.message or "Question processed.")
 
-        result_area.dataframe(build_results_dataframe([result]))
+        result_area.dataframe(build_results_dataframe([result]).style.apply(highlight_status, axis=1))
 
     pending = st.session_state.get("pending_duplicate")
     if pending is not None:
-        if st.button("Keep duplicate"):
-            status_message.info("Saving duplicate...")
-            result = process_manual_entry(
-                pending["qid"],
-                pending["question_text"],
-                allow_duplicate=True,
-            )
-            st.session_state["pending_duplicate"] = None
-            if result is not None:
-                status_message.success(result.message or "Duplicate saved.")
-                result_area.dataframe(build_results_dataframe([result]))
-            else:
-                status_message.error("Unable to save duplicate.")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Keep duplicate"):
+                status_message.info("Saving duplicate...")
+                result = process_manual_entry(
+                    pending["qid"],
+                    pending["question_text"],
+                    subject,
+                    threshold,
+                    allow_duplicate=True,
+                )
+                st.session_state["pending_duplicate"] = None
+                if result is not None:
+                    status_message.success(result.message or "Duplicate saved.")
+                    result_area.dataframe(build_results_dataframe([result]).style.apply(highlight_status, axis=1))
+                else:
+                    status_message.error("Unable to save duplicate.")
+        with col2:
+            if st.button("Discard"):
+                st.session_state["pending_duplicate"] = None
+                status_message.empty()
+                result_area.empty()
 
 
 def main() -> None:
     configure_page()
     init_session_state()
 
-    with st.container():
-        render_header()
+    render_header()
 
-    st.divider()
+    with st.sidebar:
+        subject, threshold = render_subject_selector()
 
-    with st.container():
-        render_file_upload_section()
-
-    st.divider()
-
-    with st.container():
-        render_manual_entry_section()
+    tab_upload, tab_manual = st.tabs(["Batch Upload", "Manual Entry"])
+    with tab_upload:
+        render_file_upload_section(subject, threshold)
+    with tab_manual:
+        render_manual_entry_section(subject, threshold)
 
 
 if __name__ == "__main__":

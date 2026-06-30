@@ -1,9 +1,9 @@
 import argparse
 from typing import Iterable
 
-from .agents.enricher import process_file as process_enricher_file
-from .agents.rag import ChromaRAGStore, process_file as process_rag_file
-from .enricher import enrich_question
+from agent1.agent import enrich_question, process_file as process_enricher_file
+from agent2.rag import process_file as process_rag_file
+from agent2.storage import ChromaRAGStore
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -44,6 +44,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--question",
         help="Single raw SQL question text to enrich when not using an input file.",
     )
+    parser.add_argument(
+        "--subject",
+        default="sql",
+        help="Subject domain for enrichment: sql, python, or dsa.",
+    )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -51,20 +56,25 @@ def main(argv: Iterable[str] | None = None) -> None:
     args = parse_args(argv)
 
     if args.agent == "rag" and args.store:
-        rag_store = ChromaRAGStore(persist_dir=args.persist_dir)
+        rag_store = ChromaRAGStore.for_subject(args.subject, persist_dir=args.persist_dir)
     else:
         rag_store = None
 
     if args.input_file:
         if args.agent == "enricher":
-            process_enricher_file(args.input_file, args.output_file)
+            process_enricher_file(args.input_file, args.output_file, subject=args.subject)
             return
 
         if args.agent == "rag":
             if rag_store is None:
                 raise ValueError("RAG agent requires --store to persist results in Chroma DB.")
 
-            store_results = process_rag_file(args.input_file, rag_store, args.output_file)
+            store_results = process_rag_file(
+                args.input_file,
+                rag_store,
+                args.output_file,
+                subject=args.subject,
+            )
             for result in store_results:
                 print(
                     f"qid={result.qid}, status={result.status}, original_qid={result.original_qid}, distance={result.distance}, message={result.message}"
@@ -72,7 +82,7 @@ def main(argv: Iterable[str] | None = None) -> None:
             return
 
     if args.qid and args.question:
-        result = enrich_question(args.qid, args.question)
+        result = enrich_question(args.qid, args.question, subject=args.subject)
         print("qid:", result.qid)
         print("enriched_text:", result.enriched_text)
         return

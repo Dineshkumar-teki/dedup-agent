@@ -1,15 +1,28 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 
 try:
     import chromadb
     from chromadb.config import Settings
-except ImportError as exc:
+except ImportError:
     chromadb = None
     Settings = None
+
+
+def _slugify(subject: str) -> str:
+    normalized = subject.strip().lower()
+    if not normalized:
+        raise ValueError("Subject must not be empty.")
+
+    slug = "".join(ch if ch.isalnum() else "_" for ch in normalized)
+    slug = slug.strip("_")
+    if not slug:
+        raise ValueError("Subject must contain at least one alphanumeric character.")
+    return slug
 
 
 @dataclass(frozen=True)
@@ -37,20 +50,40 @@ class ChromaRAGStore:
         persist_path = Path(persist_dir)
         persist_path.mkdir(parents=True, exist_ok=True)
 
-        self.client = chromadb.Client(
-            settings=Settings(
-                persist_directory=str(persist_path),
-                is_persistent=True,
-            )
-        )
-        self.embedding = GoogleGenerativeAIEmbeddings(
-            model="gemini-embedding-2-preview",
+        self.client = chromadb.PersistentClient(path=str(persist_path))
+        # NOTE: OpenAIEmbeddings does not expose input_type parameter (search_query vs search_document).
+        # We use symmetric embeddings for both indexing and querying.
+        self.embedding = OpenAIEmbeddings(
+            model="openai/text-embedding-3-large",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ["OPENROUTER_API_KEY"],
         )
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
-            metadata={"source": "sql-dedup-agent"},
+            metadata={"source": "sql-dedup-agent", "hnsw:space": "cosine"},
         )
         self.duplicate_distance_threshold = duplicate_distance_threshold
+
+    @classmethod
+    def for_subject(
+        cls,
+        subject: str,
+        persist_dir: str = "chroma_db",
+        **kwargs,
+    ) -> "ChromaRAGStore":
+        collection_name = _slugify(subject)
+        return cls(persist_dir=persist_dir, collection_name=collection_name, **kwargs)
+
+    def list_subjects(self) -> list[str]:
+        subjects: list[str] = []
+        for collection_summary in self.client.list_collections():
+            try:
+                collection = self.client.get_collection(name=collection_summary.name)
+                if collection.metadata.get("source") == "sql-dedup-agent":
+                    subjects.append(collection_summary.name)
+            except Exception:
+                continue
+        return subjects
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         return self.embedding.embed_documents(texts)
