@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 import streamlit as st
 
-DEFAULT_SUBJECTS = ["sql", "python", "dsa"]
+DEFAULT_SUBJECTS = ["sql", "python", "javascript", "react"]
 
 if TYPE_CHECKING:
     from agent2.storage import ChromaRAGStore, StoreResult
@@ -90,7 +90,10 @@ def get_available_subjects() -> list[str]:
         return sorted(subjects)
 
     try:
-        probe = ChromaRAGStore.for_subject(DEFAULT_SUBJECTS[0], persist_dir="chroma_db")
+        probe = ChromaRAGStore.for_subject(
+            DEFAULT_SUBJECTS[0],
+            persist_dir=str(Path(__file__).resolve().parent / "chroma_db"),
+        )
         subjects.update(probe.list_subjects())
     except Exception:
         pass
@@ -113,7 +116,7 @@ def get_rag_store(subject: str, threshold: float) -> Any:
     if store_key not in st.session_state["rag_stores"]:
         st.session_state["rag_stores"][store_key] = ChromaRAGStore.for_subject(
             subject_key,
-            persist_dir="chroma_db",
+            persist_dir=str(Path(__file__).resolve().parent / "chroma_db"),
             duplicate_distance_threshold=threshold,
         )
     return st.session_state["rag_stores"][store_key]
@@ -186,15 +189,6 @@ def render_subject_selector() -> tuple[str, float]:
         value=0.25,
         step=0.01,
     )
-
-    new_subject = st.text_input("Add a custom subject", value="")
-    if st.button("Register subject") and new_subject.strip():
-        try:
-            selected_subject = new_subject.strip().lower()
-            get_rag_store(selected_subject, threshold)
-            st.success(f"Registered new subject: {selected_subject}")
-        except Exception as exc:
-            st.error(f"Failed to register subject: {format_error(exc)}")
 
     return selected_subject, threshold
 
@@ -376,11 +370,28 @@ def main() -> None:
     with st.sidebar:
         subject, threshold = render_subject_selector()
 
-    tab_upload, tab_manual = st.tabs(["Batch Upload", "Manual Entry"])
-    with tab_upload:
-        render_file_upload_section(subject, threshold)
-    with tab_manual:
-        render_manual_entry_section(subject, threshold)
+    st.session_state["subject"] = subject
+    st.session_state["threshold"] = threshold
+
+    st.markdown(
+        f"""
+    
+        📚 **Subject:** {subject}
+        🎯 **Threshold:** {threshold}
+    
+
+    """,
+        unsafe_allow_html=True,
+    )
+
+    pages = {
+        "Pool Navigation": [
+            st.Page("pages/store_pool.py", title="Store Pool", icon="🗄️"),
+            st.Page("pages/check_pool.py", title="Check Pool", icon="🔍"),
+        ]
+    }
+    pg = st.navigation(pages)
+    pg.run()
 
 
 if __name__ == "__main__":

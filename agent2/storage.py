@@ -3,7 +3,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+
+BORDERLINE_MARGIN = 0.03
 
 try:
     import chromadb
@@ -48,15 +54,24 @@ class ChromaRAGStore:
             )
 
         persist_path = Path(persist_dir)
+        if not persist_path.is_absolute():
+            persist_path = ROOT_DIR / persist_path
         persist_path.mkdir(parents=True, exist_ok=True)
 
         self.client = chromadb.PersistentClient(path=str(persist_path))
         # NOTE: OpenAIEmbeddings does not expose input_type parameter (search_query vs search_document).
         # We use symmetric embeddings for both indexing and querying.
+        load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY is not set. Add it to the project .env file or export it before launching the app."
+            )
+
         self.embedding = OpenAIEmbeddings(
             model="openai/text-embedding-3-large",
             base_url="https://openrouter.ai/api/v1",
-            api_key=os.environ["OPENROUTER_API_KEY"],
+            api_key=api_key,
         )
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
@@ -88,6 +103,9 @@ class ChromaRAGStore:
     def _embed(self, texts: list[str]) -> list[list[float]]:
         return self.embedding.embed_documents(texts)
 
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return self.embedding.embed_documents(texts)
+
     @staticmethod
     def _distance_to_similarity(distance: float | None) -> float | None:
         if distance is None:
@@ -109,8 +127,11 @@ class ChromaRAGStore:
             }
         return None
 
-    def _find_duplicate(self, enriched_text: str) -> dict[str, Any] | None:
-        query_embeddings = self._embed([enriched_text])
+    def _find_duplicate(self, enriched_text_or_embedding: str | list[float]) -> dict[str, Any] | None:
+        if isinstance(enriched_text_or_embedding, list):
+            query_embeddings = [enriched_text_or_embedding]
+        else:
+            query_embeddings = self._embed([enriched_text_or_embedding])
         query_result = self.collection.query(
             query_embeddings=query_embeddings,
             n_results=1,
@@ -140,12 +161,16 @@ class ChromaRAGStore:
         enriched_text: str,
         message: str,
         similarity: float | None = None,
+        embedding: list[float] | None = None,
     ) -> StoreResult:
+        if embedding is None:
+            embedding = self._embed([enriched_text])[0]
+
         self.collection.add(
             ids=[qid],
             documents=[enriched_text],
             metadatas=[{"qid": qid, "raw_question": raw_question}],
-            embeddings=self.embedding.embed_documents([enriched_text]),
+            embeddings=[embedding],
         )
         return StoreResult(
             qid=qid,
@@ -210,9 +235,164 @@ class ChromaRAGStore:
                     message="Similar question found.",
                 )
 
-        return self._store_new_question(
+        nearest_distance = None
+        if duplicate is not None:
+            nearest_distance = duplicate.get("distance")
+
+        result = self._store_new_question(
             qid,
             raw_question,
             enriched_text,
             message="Question stored.",
         )
+
+        if (
+            nearest_distance is not None
+            and abs(nearest_distance - self.duplicate_distance_threshold) <= BORDERLINE_MARGIN
+        ):
+            result = StoreResult(
+                qid=result.qid,
+                status="borderline_stored",
+                original_qid=result.original_qid,
+                distance=result.distance,
+                similarity=result.similarity,
+                message=result.message,
+            )
+
+        return result
+
+    def check_duplicate(self, qid: str, enriched_text: str) -> StoreResult:
+        existing = self._get_by_qid(qid)
+        if existing is not None:
+            if existing["document"] == enriched_text:
+                return StoreResult(
+                    qid=qid,
+                    status="already_exists",
+                    original_qid=qid,
+                    message="Question already exists.",
+                )
+            return StoreResult(
+                qid=qid,
+                status="qid_conflict",
+                original_qid=qid,
+                message="QID conflict: different question exists.",
+            )
+
+        embedding = self._embed([enriched_text])[0]
+        duplicate = self._find_duplicate(embedding)
+        if duplicate is not None:
+            duplicate_qid = duplicate["metadata"].get("qid")
+            distance = duplicate.get("distance")
+            similarity = self._distance_to_similarity(distance)
+            if distance is not None and distance <= self.duplicate_distance_threshold:
+                if duplicate["document"] == enriched_text:
+                    return StoreResult(
+                        qid=qid,
+                        status="duplicate",
+                        original_qid=duplicate_qid,
+                        distance=distance,
+                        similarity=similarity,
+                        message="Exact duplicate found.",
+                    )
+                return StoreResult(
+                    qid=qid,
+                    status="duplicate",
+                    original_qid=duplicate_qid,
+                    distance=distance,
+                    similarity=similarity,
+                    message="Similar question found.",
+                )
+
+        return StoreResult(
+            qid=qid,
+            status="new",
+            original_qid=qid,
+            message="No duplicate found.",
+        )
+
+    def batch_store(self, rows: list[tuple[str, str, str]]) -> list[StoreResult]:
+        enriched_texts = [enriched_text for _, _, enriched_text in rows]
+        embeddings = self.embed_batch(enriched_texts)
+
+        results: list[StoreResult] = []
+        for (qid, raw_question, enriched_text), embedding in zip(rows, embeddings):
+            existing_by_qid = self._get_by_qid(qid)
+            if existing_by_qid is not None:
+                if existing_by_qid["document"] == enriched_text:
+                    results.append(
+                        StoreResult(
+                            qid=qid,
+                            status="already_stored",
+                            original_qid=qid,
+                            message="Question already stored.",
+                        )
+                    )
+                else:
+                    results.append(
+                        StoreResult(
+                            qid=qid,
+                            status="qid_conflict",
+                            original_qid=qid,
+                            message="QID conflict: different question exists.",
+                        )
+                    )
+                continue
+
+            duplicate = self._find_duplicate(embedding)
+            if duplicate is not None:
+                duplicate_qid = duplicate["metadata"].get("qid")
+                distance = duplicate.get("distance")
+                similarity = self._distance_to_similarity(distance)
+                if distance is not None and distance <= self.duplicate_distance_threshold:
+                    if duplicate["document"] == enriched_text:
+                        results.append(
+                            StoreResult(
+                                qid=qid,
+                                status="duplicate",
+                                original_qid=duplicate_qid,
+                                distance=distance,
+                                similarity=similarity,
+                                message="Exact duplicate found.",
+                            )
+                        )
+                    else:
+                        results.append(
+                            StoreResult(
+                                qid=qid,
+                                status="duplicate",
+                                original_qid=duplicate_qid,
+                                distance=distance,
+                                similarity=similarity,
+                                message="Similar question found.",
+                            )
+                        )
+                    continue
+
+            nearest_distance = None
+            if duplicate is not None:
+                nearest_distance = duplicate.get("distance")
+
+            result = self._store_new_question(
+                qid,
+                raw_question,
+                enriched_text,
+                message="Question stored.",
+                embedding=embedding,
+            )
+
+            if (
+                nearest_distance is not None
+                and abs(nearest_distance - self.duplicate_distance_threshold) <= BORDERLINE_MARGIN
+            ):
+                result = StoreResult(
+                    qid=result.qid,
+                    status="borderline_stored",
+                    original_qid=result.original_qid,
+                    distance=result.distance,
+                    similarity=result.similarity,
+                    message=result.message,
+                )
+
+            results.append(result)
+
+        return results

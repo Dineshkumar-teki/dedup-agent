@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -7,7 +8,8 @@ from pydantic import BaseModel, Field
 from common.io import load_questions_from_file, write_enriched_questions
 from common.prompts import get_prompt
 
-load_dotenv()
+ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
 
 
 class EnrichedQuestion(BaseModel):
@@ -22,11 +24,18 @@ class EnrichedQuestion(BaseModel):
 
 def build_enricher() -> ChatOpenAI:
     """Create the AI agent configured to return the exact EnrichedQuestion shape."""
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not set. Add it to the project .env file or export it before launching the app."
+        )
+
     model = ChatOpenAI(
         model="google/gemini-3-flash-preview",
         temperature=0,
         base_url="https://openrouter.ai/api/v1",
-        api_key=os.environ["OPENROUTER_API_KEY"],
+        api_key=api_key,
     )
     return model.with_structured_output(EnrichedQuestion)
 

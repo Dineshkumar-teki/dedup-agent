@@ -3,9 +3,9 @@ import sys
 from pathlib import Path
 
 import chromadb
+from dotenv import load_dotenv
 
-os.environ.setdefault("GOOGLE_API_KEY", "dummy")
-os.environ.setdefault("GEMINI_API_KEY", "dummy")
+load_dotenv()
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
