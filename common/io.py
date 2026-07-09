@@ -6,6 +6,13 @@ from .utils import find_column, QID_ALIASES, QUESTION_ALIASES
 
 
 def load_questions_from_csv(path: str) -> list[tuple[str, str]]:
+    """Load (qid, question) pairs from a CSV file.
+
+    Raises ValueError if:
+    - File has no headers.
+    - QID or Question column cannot be found.
+    Error message includes accepted aliases and actual headers found.
+    """
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         if not reader.fieldnames:
@@ -15,9 +22,17 @@ def load_questions_from_csv(path: str) -> list[tuple[str, str]]:
         qid_key = find_column(headers, QID_ALIASES)
         question_key = find_column(headers, QUESTION_ALIASES)
 
-        if qid_key is None or question_key is None:
+        if qid_key is None:
             raise ValueError(
-                "CSV file must contain columns named 'qid' and 'question' (or compatible aliases)."
+                f"QID column not found. "
+                f"Accepted: {QID_ALIASES}. "
+                f"Found: {list(headers.keys())}"
+            )
+        if question_key is None:
+            raise ValueError(
+                f"Question column not found. "
+                f"Accepted: {QUESTION_ALIASES}. "
+                f"Found: {list(headers.keys())}"
             )
 
         rows: list[tuple[str, str]] = []
@@ -30,6 +45,13 @@ def load_questions_from_csv(path: str) -> list[tuple[str, str]]:
 
 
 def load_questions_from_excel(path: str) -> list[tuple[str, str]]:
+    """Load (qid, question) pairs from an Excel file (.xlsx/.xls).
+
+    Raises ValueError if:
+    - File is empty.
+    - QID or Question column cannot be found.
+    Error message includes accepted aliases and actual headers found.
+    """
     try:
         import openpyxl
     except ImportError as exc:
@@ -49,9 +71,17 @@ def load_questions_from_excel(path: str) -> list[tuple[str, str]]:
     qid_idx = find_column(headers, QID_ALIASES)
     question_idx = find_column(headers, QUESTION_ALIASES)
 
-    if qid_idx is None or question_idx is None:
+    if qid_idx is None:
         raise ValueError(
-            "Excel file must contain columns named 'qid' and 'question' (or compatible aliases)."
+            f"QID column not found. "
+            f"Accepted: {QID_ALIASES}. "
+            f"Found: {list(headers.keys())}"
+        )
+    if question_idx is None:
+        raise ValueError(
+            f"Question column not found. "
+            f"Accepted: {QUESTION_ALIASES}. "
+            f"Found: {list(headers.keys())}"
         )
 
     entries: list[tuple[str, str]] = []
@@ -66,6 +96,10 @@ def load_questions_from_excel(path: str) -> list[tuple[str, str]]:
 
 
 def load_questions_from_file(input_path: str) -> list[tuple[str, str]]:
+    """Dispatch to CSV or Excel loader based on file extension.
+
+    Raises ValueError for unsupported file types.
+    """
     path = Path(input_path)
     if path.suffix.lower() == ".csv":
         return load_questions_from_csv(str(path))
@@ -77,6 +111,7 @@ def load_questions_from_file(input_path: str) -> list[tuple[str, str]]:
 
 
 def write_enriched_questions(enriched: Iterable[tuple[str, str]], output_file: str | None = None) -> None:
+    """Write (qid, enriched_text) pairs to a CSV file or stdout."""
     if output_file:
         with open(output_file, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)

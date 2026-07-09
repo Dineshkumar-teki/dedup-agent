@@ -90,16 +90,13 @@ def render_file_upload_section(subject: str, threshold: float) -> None:
 
 def render_manual_entry_section(subject: str, threshold: float) -> None:
     st.header("Manual Question Entry")
-    question_id = st.text_input("Question ID")
+    question_id = st.text_input("Question ID", help="Optional")
     question_text = st.text_area("Question")
 
     status_message = st.empty()
     result_area = st.empty()
 
     if st.button("Check Question"):
-        if not question_id.strip():
-            st.warning("Question ID is empty")
-            return
         if not question_text.strip():
             st.warning("Question text is empty")
             return
@@ -108,10 +105,13 @@ def render_manual_entry_section(subject: str, threshold: float) -> None:
         if rag_store is None:
             return
 
+        qid_value = question_id.strip()
+        display_qid = qid_value or "manual_"
+
         status_message.info("Checking question...")
         try:
-            enriched = enrich_question(question_id.strip(), question_text.strip(), subject)
-            result = rag_store.check_duplicate(question_id.strip(), enriched.enriched_text)
+            enriched = enrich_question(display_qid, question_text.strip(), subject)
+            result = rag_store.check_duplicate(qid_value or "", enriched.enriched_text)
 
             if result.status == "unique":
                 st.success("Question is unique. Not in pool.")
@@ -132,7 +132,7 @@ def render_manual_entry_section(subject: str, threshold: float) -> None:
                 pd.DataFrame(
                     [
                         {
-                            "Question ID": result.qid,
+                            "Question ID": display_qid,
                             "Status": result.status,
                             "Original QID": result.original_qid,
                             "Similarity": f"{result.similarity:.1f}%" if isinstance(result.similarity, (float, int)) else None,
