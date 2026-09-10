@@ -8,57 +8,46 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 import streamlit as st
 
-DEFAULT_SUBJECTS = ["sql", "python", "javascript", "react"]
+from common.auth import require_authentication
+from common.config import get_settings
+from common.logging_config import setup_logging
+from common.ui import STATUS_LABELS, apply_status_colors
+
+DEFAULT_SUBJECTS = ["sql", "python", "javascript", "react", "dsa"]
 
 if TYPE_CHECKING:
     from agent2.storage import ChromaRAGStore, StoreResult
 
 try:
     from agent1.agent import enrich_question
-    from agent2.rag import process_file as process_rag_file
     from agent2.storage import ChromaRAGStore, StoreResult
+
     agent_import_error = None
 except ImportError as exc:
     enrich_question = None
-    process_rag_file = None
     ChromaRAGStore = None
     StoreResult = None
     agent_import_error = exc
 
 
 def configure_page() -> None:
-    st.set_page_config(page_title="Question Duplicate Checker", layout="centered")
+    st.set_page_config(
+        page_title="Question Duplicate Checker",
+        page_icon="🔍",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
 
 
 def init_session_state() -> None:
-    if "uploaded_file_bytes" not in st.session_state:
-        st.session_state["uploaded_file_bytes"] = None
-    if "uploaded_file_name" not in st.session_state:
-        st.session_state["uploaded_file_name"] = None
-    if "last_results" not in st.session_state:
-        st.session_state["last_results"] = []
-    if "last_results_source" not in st.session_state:
-        st.session_state["last_results_source"] = None
-    if "last_status" not in st.session_state:
-        st.session_state["last_status"] = None
-    if "last_error" not in st.session_state:
-        st.session_state["last_error"] = None
-    if "pending_duplicate" not in st.session_state:
-        st.session_state["pending_duplicate"] = None
-
-
-def load_uploaded_file(uploaded_file) -> pd.DataFrame:
-    if uploaded_file.name.lower().endswith(".csv"):
-        return pd.read_csv(uploaded_file)
-    return pd.read_excel(uploaded_file)
-
-
-def load_uploaded_file_bytes(file_bytes: bytes, name: str) -> pd.DataFrame:
-    buffer = BytesIO(file_bytes)
-    buffer.name = name
-    if name.lower().endswith(".csv"):
-        return pd.read_csv(buffer)
-    return pd.read_excel(buffer)
+    defaults = {
+        "uploaded_file_bytes": None,
+        "uploaded_file_name": None,
+        "pending_duplicate": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
 def save_uploaded_file_to_temp(uploaded_file) -> Path:
@@ -90,10 +79,7 @@ def get_available_subjects() -> list[str]:
         return sorted(subjects)
 
     try:
-        probe = ChromaRAGStore.for_subject(
-            DEFAULT_SUBJECTS[0],
-            persist_dir=str(Path(__file__).resolve().parent / "chroma_db"),
-        )
+        probe = ChromaRAGStore.for_subject(DEFAULT_SUBJECTS[0])
         subjects.update(probe.list_subjects())
     except Exception:
         pass
@@ -104,7 +90,8 @@ def get_available_subjects() -> list[str]:
 def get_rag_store(subject: str, threshold: float) -> Any:
     if agent_import_error is not None:
         st.error(
-            "Backend imports failed: {}. Install dependencies and run again.".format(agent_import_error)
+            f"Backend imports failed: {agent_import_error}. "
+            "Install dependencies and run again."
         )
         return None
 
@@ -112,14 +99,22 @@ def get_rag_store(subject: str, threshold: float) -> Any:
         st.session_state["rag_stores"] = {}
 
     subject_key = subject.strip().lower()
-    store_key = (subject_key, threshold)
-    if store_key not in st.session_state["rag_stores"]:
-        st.session_state["rag_stores"][store_key] = ChromaRAGStore.for_subject(
-            subject_key,
-            persist_dir=str(Path(__file__).resolve().parent / "chroma_db"),
-            duplicate_distance_threshold=threshold,
-        )
-    return st.session_state["rag_stores"][store_key]
+    if subject_key not in st.session_state["rag_stores"]:
+        st.session_state["rag_stores"][subject_key] = ChromaRAGStore.for_subject(subject_key)
+
+    store = st.session_state["rag_stores"][subject_key]
+    store.duplicate_distance_threshold = threshold
+    return store
+
+
+def get_pool_count(subject: str) -> int | None:
+    try:
+        store = get_rag_store(subject, get_settings().duplicate_distance_threshold)
+        if store is None:
+            return None
+        return store.count_questions()
+    except Exception:
+        return None
 
 
 def format_error(exc: Exception) -> str:
@@ -131,22 +126,7 @@ def format_error(exc: Exception) -> str:
     network_indicators = ["network", "connection", "timeout", "unreachable"]
     if any(token in lower_message for token in network_indicators):
         return "Network error occurred. Check your internet connection and retry."
-    return str(exc)
-
-
-def highlight_status(row: pd.Series) -> list[str]:
-    status = str(row.get("Status", "")).lower()
-    if status == "duplicate":
-        color = "background-color: #f8d7da"
-    elif status == "stored":
-        color = "background-color: #d4edda"
-    elif status == "qid_conflict":
-        color = "background-color: #fff3cd"
-    elif status == "already_stored":
-        color = "background-color: #e2e3e5"
-    else:
-        color = ""
-    return [color] * len(row)
+    return "An unexpected error occurred. Check logs for details."
 
 
 def build_results_dataframe(rows: list[Any]) -> pd.DataFrame:
@@ -165,83 +145,56 @@ def build_results_dataframe(rows: list[Any]) -> pd.DataFrame:
             original_qid = item.original_qid
             message = item.message
 
-        similarity_value = f"{similarity:.1f}%" if isinstance(similarity, (float, int)) else None
+        similarity_value = f"{similarity:.1f}%" if isinstance(similarity, (float, int)) else "—"
         results.append(
             {
                 "Question ID": qid,
-                "Status": status,
-                "Original QID": original_qid,
+                "Status": STATUS_LABELS.get(status, status.replace("_", " ").title()),
+                "Original QID": original_qid or "—",
                 "Similarity": similarity_value,
-                "Message": message,
+                "Message": message or "",
             }
         )
     return pd.DataFrame(results)
 
 
 def render_subject_selector() -> tuple[str, float]:
-    st.header("Subject")
+    st.header("Settings")
     available_subjects = get_available_subjects()
-    selected_subject = st.selectbox("Select a subject", options=available_subjects, index=0)
+    selected_subject = st.selectbox(
+        "Subject",
+        options=available_subjects,
+        index=0,
+        help="Questions are stored in separate pools per subject.",
+    )
     threshold = st.slider(
         "Duplicate sensitivity",
         min_value=0.0,
         max_value=1.0,
-        value=0.25,
+        value=float(st.session_state.get("threshold", get_settings().duplicate_distance_threshold)),
         step=0.01,
+        help="Lower = stricter matching. Try 0.20–0.30 for most subjects.",
     )
+
+    pool_count = get_pool_count(selected_subject)
+    if pool_count is not None:
+        st.metric("Questions in pool", pool_count)
 
     return selected_subject, threshold
 
 
-def process_file(uploaded_file, subject: str, threshold: float):
-    upload_source, file_name = get_uploaded_file_source(uploaded_file)
-    if upload_source is None:
-        st.warning("Please select a file before clicking Process File.")
-        return None
-
-    rag_store = get_rag_store(subject, threshold)
-    if rag_store is None:
-        return None
-
-    temp_path = None
-    try:
-        if hasattr(upload_source, "getbuffer"):
-            temp_path = save_uploaded_file_to_temp(upload_source)
-        else:
-            temp_path = save_uploaded_file_to_temp(upload_source)
-        with st.spinner("Enriching and checking questions..."):
-            results = process_rag_file(str(temp_path), rag_store, subject=subject)
-        st.session_state["last_results"] = [
-            {
-                "qid": item.qid,
-                "status": item.status,
-                "original_qid": item.original_qid,
-                "similarity": getattr(item, "similarity", None),
-                "message": item.message,
-            }
-            for item in results
-        ]
-        st.session_state["last_results_source"] = file_name
-        st.session_state["last_status"] = "success"
-        st.session_state["last_error"] = None
-        return build_results_dataframe(results)
-    except Exception as exc:
-        message = format_error(exc)
-        st.error(f"Failed to process file: {message}")
-        st.session_state["last_status"] = "error"
-        st.session_state["last_error"] = message
-        return None
-    finally:
-        if temp_path is not None and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-
-
-def process_manual_entry(question_id: str, question_text: str, subject: str, threshold: float, allow_duplicate: bool = False):
+def process_manual_entry(
+    question_id: str,
+    question_text: str,
+    subject: str,
+    threshold: float,
+    allow_duplicate: bool = False,
+):
     if not question_id.strip():
-        st.warning("Question ID is empty")
+        st.warning("Please enter a Question ID.")
         return None
     if not question_text.strip():
-        st.warning("Question text is empty")
+        st.warning("Please enter the question text.")
         return None
 
     rag_store = get_rag_store(subject, threshold)
@@ -249,7 +202,7 @@ def process_manual_entry(question_id: str, question_text: str, subject: str, thr
         return None
 
     try:
-        with st.spinner("Checking question..."):
+        with st.spinner("Enriching and checking question..."):
             enriched = enrich_question(question_id.strip(), question_text.strip(), subject)
             store_result = rag_store.add_or_flag_duplicate(
                 question_id.strip(),
@@ -259,134 +212,106 @@ def process_manual_entry(question_id: str, question_text: str, subject: str, thr
             )
         return store_result
     except Exception as exc:
-        message = format_error(exc)
-        st.error(f"Failed to process question: {message}")
+        st.error(f"Failed to process question: {format_error(exc)}")
         return None
 
 
-def render_header() -> None:
-    st.title("Question Duplicate Checker")
-    st.write(
-        "Provide a file or type a question to improve it, find similar existing questions, and save it for future use."
-    )
-
-
-def render_file_upload_section(subject: str, threshold: float) -> None:
-    st.header("File Upload")
-    uploaded_file = st.file_uploader("Upload a CSV or XLSX file", type=["csv", "xlsx"])
-    if uploaded_file is not None:
-        st.session_state["uploaded_file_bytes"] = uploaded_file.getbuffer().tobytes()
-        st.session_state["uploaded_file_name"] = uploaded_file.name
-
-    if st.session_state.get("uploaded_file_name"):
-        st.write(f"Uploaded file: {st.session_state['uploaded_file_name']}")
-
-    status_message = st.empty()
-    result_area = st.empty()
-
-    if st.button("Process File"):
-        status_message.info("Waiting for backend response...")
-        df_results = process_file(uploaded_file, subject, threshold)
-        if df_results is not None:
-            status_message.success("File processed successfully.")
-            result_area.dataframe(df_results.style.apply(highlight_status, axis=1))
-        else:
-            status_message.error("Failed to process the file. See the message above.")
-
-    if st.session_state.get("last_results"):
-        if st.session_state.get("last_status") == "success":
-            status_message.success("Showing last successful result from {}.".format(st.session_state.get("last_results_source")))
-            result_area.dataframe(pd.DataFrame(st.session_state["last_results"]).style.apply(highlight_status, axis=1))
-        elif st.session_state.get("last_status") == "error":
-            status_message.error("Last operation failed: {}".format(st.session_state.get("last_error")))
-
-
 def render_manual_entry_section(subject: str, threshold: float) -> None:
-    st.header("Manual Question Entry")
-    question_id = st.text_input("Question ID")
-    question_text = st.text_area("Question")
+    question_id = st.text_input("Question ID", placeholder="e.g. Q101")
+    question_text = st.text_area("Question", placeholder="Paste the full question text here...", height=150)
 
-    status_message = st.empty()
-    result_area = st.empty()
-
-    if st.button("Check Question"):
-        if st.session_state.get("pending_duplicate") is not None:
-            pending_qid = st.session_state["pending_duplicate"].get("qid")
-            if pending_qid != question_id.strip():
-                st.info("Replacing previous pending duplicate check.")
-        status_message.info("Checking question...")
-        result = process_manual_entry(question_id, question_text, subject, threshold, allow_duplicate=False)
-        if result is None:
-            status_message.error("Unable to check the question.")
-            return
-
-        if result.status == "duplicate":
-            similarity_text = (
-                f" ({result.similarity:.1f}%)" if isinstance(result.similarity, (float, int)) else ""
-            )
-            st.warning(f"Similar question found{similarity_text}. Click Keep to store it.")
-            st.session_state["pending_duplicate"] = {
-                "qid": question_id.strip(),
-                "question_text": question_text.strip(),
-            }
-        else:
-            st.session_state["pending_duplicate"] = None
-            status_message.success(result.message or "Question processed.")
-
-        result_area.dataframe(build_results_dataframe([result]).style.apply(highlight_status, axis=1))
+    col1, _col2 = st.columns([1, 3])
+    with col1:
+        submit = st.button("Store question", type="primary", width="stretch")
 
     pending = st.session_state.get("pending_duplicate")
-    if pending is not None:
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Keep duplicate"):
-                status_message.info("Saving duplicate...")
-                result = process_manual_entry(
-                    pending["qid"],
-                    pending["question_text"],
-                    subject,
-                    threshold,
-                    allow_duplicate=True,
+    if pending is not None and pending.get("qid") != question_id.strip():
+        st.session_state["pending_duplicate"] = None
+        pending = None
+
+    if submit:
+        result = process_manual_entry(
+            question_id, question_text, subject, threshold, allow_duplicate=False
+        )
+        if result is not None:
+            if result.status == "duplicate":
+                similarity_text = (
+                    f" ({result.similarity:.1f}% similar)"
+                    if isinstance(result.similarity, (float, int))
+                    else ""
                 )
+                st.session_state["pending_duplicate"] = {
+                    "qid": question_id.strip(),
+                    "question_text": question_text.strip(),
+                    "similarity_text": similarity_text,
+                }
+            elif result.status == "stored":
                 st.session_state["pending_duplicate"] = None
-                if result is not None:
-                    status_message.success(result.message or "Duplicate saved.")
-                    result_area.dataframe(build_results_dataframe([result]).style.apply(highlight_status, axis=1))
-                else:
-                    status_message.error("Unable to save duplicate.")
-        with col2:
-            if st.button("Discard"):
+                st.success("Question stored successfully.")
+            elif result.status == "already_stored":
                 st.session_state["pending_duplicate"] = None
-                status_message.empty()
-                result_area.empty()
+                st.info("This question is already in the pool.")
+            elif result.status == "qid_conflict":
+                st.session_state["pending_duplicate"] = None
+                st.error("This Question ID is already used for a different question.")
+            else:
+                st.session_state["pending_duplicate"] = None
+                st.info(result.message or "Question processed.")
+
+            if result.status != "duplicate":
+                st.dataframe(apply_status_colors(build_results_dataframe([result])), width="stretch")
+
+    pending = st.session_state.get("pending_duplicate")
+    if pending is None:
+        return
+
+    similarity_text = pending.get("similarity_text", "")
+    st.warning(f"Similar question already in the pool{similarity_text}.")
+    col1, col2 = st.columns(2)
+    with col1:
+        store_anyway = st.button("Store anyway", type="primary")
+    with col2:
+        cancel = st.button("Cancel")
+
+    if store_anyway:
+        saved = process_manual_entry(
+            pending["qid"],
+            pending["question_text"],
+            subject,
+            threshold,
+            allow_duplicate=True,
+        )
+        st.session_state["pending_duplicate"] = None
+        if saved is not None:
+            st.success("Duplicate stored.")
+            st.dataframe(apply_status_colors(build_results_dataframe([saved])), width="stretch")
+    elif cancel:
+        st.session_state["pending_duplicate"] = None
+        st.rerun()
 
 
 def main() -> None:
+    setup_logging()
     configure_page()
     init_session_state()
 
-    render_header()
+    if not require_authentication():
+        return
 
     with st.sidebar:
+        st.title("Question Dedup")
+        st.caption("Enrich · Check · Store")
         subject, threshold = render_subject_selector()
+        if get_settings().auth_enabled and st.button("Sign out", width="stretch"):
+            st.session_state.pop("authenticated", None)
+            st.rerun()
 
     st.session_state["subject"] = subject
     st.session_state["threshold"] = threshold
 
-    st.markdown(
-        f"""
-    
-        📚 **Subject:** {subject}
-        🎯 **Threshold:** {threshold}
-    
-
-    """,
-        unsafe_allow_html=True,
-    )
-
     pages = {
-        "Pool Navigation": [
-            st.Page("pages/store_pool.py", title="Store Pool", icon="🗄️"),
+        "Workflow": [
+            st.Page("pages/store_pool.py", title="Store Pool", icon="🗄️", default=True),
             st.Page("pages/check_pool.py", title="Check Pool", icon="🔍"),
         ]
     }

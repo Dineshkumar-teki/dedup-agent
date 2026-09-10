@@ -1,15 +1,19 @@
-import os
-from pathlib import Path
+"""LLM-based question enrichment via OpenRouter."""
 
-from dotenv import load_dotenv
+from __future__ import annotations
+
+import logging
+from functools import lru_cache
+
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
+from tenacity import retry, stop_after_attempt, wait_exponential
 
+from common.config import get_settings
 from common.io import load_questions_from_file, write_enriched_questions
 from common.prompts import get_prompt
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+logger = logging.getLogger(__name__)
 
 
 class EnrichedQuestion(BaseModel):
@@ -22,26 +26,22 @@ class EnrichedQuestion(BaseModel):
     )
 
 
+@lru_cache(maxsize=1)
 def build_enricher() -> ChatOpenAI:
-    """Create the AI agent configured to return the exact EnrichedQuestion shape."""
-    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY is not set. Add it to the project .env file or export it before launching the app."
-        )
+    """Create a cached LLM client configured for structured EnrichedQuestion output."""
+    settings = get_settings()
+    settings.require_api_key()
 
     model = ChatOpenAI(
-        model="google/gemini-3-flash-preview",
-        temperature=0,
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
         base_url="https://openrouter.ai/api/v1",
-        api_key=api_key,
+        api_key=settings.openrouter_api_key,
     )
     return model.with_structured_output(EnrichedQuestion)
 
 
-def enrich_question(qid: str, raw_question: str, subject: str = "sql") -> EnrichedQuestion:
-    """Return an enriched result for the given qid/raw_question pair."""
+def _invoke_enricher(qid: str, raw_question: str, subject: str) -> EnrichedQuestion:
     enricher = build_enricher()
     user_message = f"qid: {qid}\nraw_question: {raw_question}"
     prompt = get_prompt(subject)
@@ -49,6 +49,25 @@ def enrich_question(qid: str, raw_question: str, subject: str = "sql") -> Enrich
         ("system", prompt.system),
         ("human", user_message),
     ])
+
+
+def enrich_question(qid: str, raw_question: str, subject: str = "sql") -> EnrichedQuestion:
+    """Return an enriched result for the given qid/raw_question pair."""
+    settings = get_settings()
+
+    @retry(
+        stop=stop_after_attempt(settings.api_retry_attempts),
+        wait=wait_exponential(
+            min=settings.api_retry_min_wait,
+            max=settings.api_retry_max_wait,
+        ),
+        reraise=True,
+    )
+    def _call() -> EnrichedQuestion:
+        return _invoke_enricher(qid, raw_question, subject)
+
+    logger.debug("Enriching qid=%s subject=%s", qid, subject)
+    return _call()
 
 
 def process_file(input_file: str, output_file: str | None = None, subject: str = "sql"):

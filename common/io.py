@@ -1,8 +1,10 @@
 import csv
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
-from .utils import find_column, QID_ALIASES, QUESTION_ALIASES
+from common.config import get_settings
+
+from .utils import QID_ALIASES, QUESTION_ALIASES, find_column
 
 
 def load_questions_from_csv(path: str) -> list[tuple[str, str]]:
@@ -95,19 +97,38 @@ def load_questions_from_excel(path: str) -> list[tuple[str, str]]:
     return entries
 
 
-def load_questions_from_file(input_path: str) -> list[tuple[str, str]]:
+def _enforce_upload_limits(rows: list[tuple[str, str]], file_size: int | None = None) -> None:
+    settings = get_settings()
+    if file_size is not None and file_size > settings.max_upload_bytes:
+        max_mb = settings.max_upload_bytes / (1024 * 1024)
+        raise ValueError(f"File exceeds maximum upload size of {max_mb:.1f} MB.")
+    if len(rows) > settings.max_upload_rows:
+        raise ValueError(
+            f"File contains {len(rows)} rows, exceeding the maximum of {settings.max_upload_rows}."
+        )
+
+
+def load_questions_from_file(
+    input_path: str,
+    *,
+    file_size: int | None = None,
+) -> list[tuple[str, str]]:
     """Dispatch to CSV or Excel loader based on file extension.
 
     Raises ValueError for unsupported file types.
     """
     path = Path(input_path)
     if path.suffix.lower() == ".csv":
-        return load_questions_from_csv(str(path))
-    if path.suffix.lower() in {".xlsx", ".xls"}:
-        return load_questions_from_excel(str(path))
-    raise ValueError(
-        "Unsupported input file type. Use a CSV file or an Excel file with .xlsx/.xls extension."
-    )
+        rows = load_questions_from_csv(str(path))
+    elif path.suffix.lower() in {".xlsx", ".xls"}:
+        rows = load_questions_from_excel(str(path))
+    else:
+        raise ValueError(
+            "Unsupported input file type. Use a CSV file or an Excel file with .xlsx/.xls extension."
+        )
+
+    _enforce_upload_limits(rows, file_size=file_size)
+    return rows
 
 
 def write_enriched_questions(enriched: Iterable[tuple[str, str]], output_file: str | None = None) -> None:

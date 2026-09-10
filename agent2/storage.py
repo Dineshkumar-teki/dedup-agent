@@ -1,22 +1,24 @@
-import os
+"""Chroma vector store for enriched question deduplication."""
+
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+from common.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 BORDERLINE_MARGIN = 0.03
 
 try:
     import chromadb
-    from chromadb.config import Settings
 except ImportError:
     chromadb = None
-    Settings = None
 
 
 def _slugify(subject: str) -> str:
@@ -44,48 +46,55 @@ class StoreResult:
 class ChromaRAGStore:
     def __init__(
         self,
-        persist_dir: str = "chroma_db",
+        persist_dir: str | None = None,
         collection_name: str = "sql_enriched_questions",
-        duplicate_distance_threshold: float = 0.25,
+        duplicate_distance_threshold: float | None = None,
     ):
-        if chromadb is None or Settings is None:
+        if chromadb is None:
             raise ImportError(
-                "chromadb is required for ChromaRAGStore. Install it with 'pip install chromadb'."
+                "chromadb is required for ChromaRAGStore. Install it with 'uv add chromadb'."
             )
 
-        persist_path = Path(persist_dir)
-        if not persist_path.is_absolute():
-            persist_path = ROOT_DIR / persist_path
-        persist_path.mkdir(parents=True, exist_ok=True)
+        from pathlib import Path
 
-        self.client = chromadb.PersistentClient(path=str(persist_path))
-        # NOTE: OpenAIEmbeddings does not expose input_type parameter (search_query vs search_document).
-        # We use symmetric embeddings for both indexing and querying.
-        load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
-        api_key = os.environ.get("OPENROUTER_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENROUTER_API_KEY is not set. Add it to the project .env file or export it before launching the app."
-            )
+        settings = get_settings()
+        settings.require_api_key()
 
+        if persist_dir is None:
+            path = settings.chroma_persist_dir
+        else:
+            path = Path(persist_dir)
+            if not path.is_absolute():
+                path = settings.chroma_persist_dir.parent / path
+
+        path.mkdir(parents=True, exist_ok=True)
+
+        self.client = chromadb.PersistentClient(path=str(path))
         self.embedding = OpenAIEmbeddings(
-            model="openai/text-embedding-3-large",
+            model=settings.embedding_model,
             base_url="https://openrouter.ai/api/v1",
-            api_key=api_key,
+            api_key=settings.openrouter_api_key,
         )
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
             metadata={"source": "sql-dedup-agent", "hnsw:space": "cosine"},
         )
-        self.duplicate_distance_threshold = duplicate_distance_threshold
+        self.duplicate_distance_threshold = (
+            duplicate_distance_threshold
+            if duplicate_distance_threshold is not None
+            else settings.duplicate_distance_threshold
+        )
+        self._retry_attempts = settings.api_retry_attempts
+        self._retry_min_wait = settings.api_retry_min_wait
+        self._retry_max_wait = settings.api_retry_max_wait
 
     @classmethod
     def for_subject(
         cls,
         subject: str,
-        persist_dir: str = "chroma_db",
+        persist_dir: str | None = None,
         **kwargs,
-    ) -> "ChromaRAGStore":
+    ) -> ChromaRAGStore:
         collection_name = _slugify(subject)
         return cls(persist_dir=persist_dir, collection_name=collection_name, **kwargs)
 
@@ -96,15 +105,30 @@ class ChromaRAGStore:
                 collection = self.client.get_collection(name=collection_summary.name)
                 if collection.metadata.get("source") == "sql-dedup-agent":
                     subjects.append(collection_summary.name)
-            except Exception:
+            except Exception as exc:
+                logger.debug("Skipping collection %s: %s", collection_summary.name, exc)
                 continue
         return subjects
 
+    def count_questions(self) -> int:
+        return self.collection.count()
+
+    def _embed_with_retry(self, texts: list[str]) -> list[list[float]]:
+        @retry(
+            stop=stop_after_attempt(self._retry_attempts),
+            wait=wait_exponential(min=self._retry_min_wait, max=self._retry_max_wait),
+            reraise=True,
+        )
+        def _call() -> list[list[float]]:
+            return self.embedding.embed_documents(texts)
+
+        return _call()
+
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        return self.embedding.embed_documents(texts)
+        return self._embed_with_retry(texts)
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        return self.embedding.embed_documents(texts)
+        return self._embed_with_retry(texts)
 
     @staticmethod
     def _distance_to_similarity(distance: float | None) -> float | None:
@@ -116,7 +140,8 @@ class ChromaRAGStore:
     def _get_by_qid(self, qid: str) -> dict[str, Any] | None:
         try:
             result = self.collection.get(ids=[qid], include=["metadatas", "documents"])
-        except Exception:
+        except Exception as exc:
+            logger.debug("QID lookup failed for %s: %s", qid, exc)
             return None
 
         if result.get("ids"):
@@ -172,6 +197,7 @@ class ChromaRAGStore:
             metadatas=[{"qid": qid, "raw_question": raw_question}],
             embeddings=[embedding],
         )
+        logger.info("Stored question qid=%s", qid)
         return StoreResult(
             qid=qid,
             status="stored",
@@ -311,6 +337,9 @@ class ChromaRAGStore:
         )
 
     def batch_store(self, rows: list[tuple[str, str, str]]) -> list[StoreResult]:
+        if not rows:
+            return []
+
         enriched_texts = [enriched_text for _, _, enriched_text in rows]
         embeddings = self.embed_batch(enriched_texts)
 
@@ -394,5 +423,78 @@ class ChromaRAGStore:
                 )
 
             results.append(result)
+
+        return results
+
+    def check_duplicates_batch(self, rows: list[tuple[str, str, str]]) -> list[StoreResult]:
+        """Check duplicates for pre-enriched rows without writing to the store."""
+        if not rows:
+            return []
+
+        enriched_texts = [enriched_text for _, _, enriched_text in rows]
+        embeddings = self.embed_batch(enriched_texts)
+
+        results: list[StoreResult] = []
+        for (qid, _, enriched_text), embedding in zip(rows, embeddings):
+            existing = self._get_by_qid(qid)
+            if existing is not None:
+                if existing["document"] == enriched_text:
+                    results.append(
+                        StoreResult(
+                            qid=qid,
+                            status="already_exists",
+                            original_qid=qid,
+                            message="Question already exists.",
+                        )
+                    )
+                else:
+                    results.append(
+                        StoreResult(
+                            qid=qid,
+                            status="qid_conflict",
+                            original_qid=qid,
+                            message="QID conflict: different question exists.",
+                        )
+                    )
+                continue
+
+            duplicate = self._find_duplicate(embedding)
+            if duplicate is not None:
+                duplicate_qid = duplicate["metadata"].get("qid")
+                distance = duplicate.get("distance")
+                similarity = self._distance_to_similarity(distance)
+                if distance is not None and distance <= self.duplicate_distance_threshold:
+                    if duplicate["document"] == enriched_text:
+                        results.append(
+                            StoreResult(
+                                qid=qid,
+                                status="duplicate",
+                                original_qid=duplicate_qid,
+                                distance=distance,
+                                similarity=similarity,
+                                message="Exact duplicate found.",
+                            )
+                        )
+                    else:
+                        results.append(
+                            StoreResult(
+                                qid=qid,
+                                status="duplicate",
+                                original_qid=duplicate_qid,
+                                distance=distance,
+                                similarity=similarity,
+                                message="Similar question found.",
+                            )
+                        )
+                    continue
+
+            results.append(
+                StoreResult(
+                    qid=qid,
+                    status="new",
+                    original_qid=qid,
+                    message="No duplicate found.",
+                )
+            )
 
         return results

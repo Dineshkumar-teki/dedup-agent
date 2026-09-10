@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: sql-dedup-agent
+    runtime: docker
+    plan: starter
+    healthCheckPath: /
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: APP_USERNAME
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: CHROMA_PERSIST_DIR
+        value: /data/chroma_db
+    disk:
+      name: chroma-data
+      mountPath: /data/chroma_db
+      sizeGB: 1

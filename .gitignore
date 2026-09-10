@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local vector database (use a mounted volume in production)
+chroma_db/
+
+# Test and tool caches
+.pytest_cache/

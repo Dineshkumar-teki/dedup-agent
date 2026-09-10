@@ -1,9 +1,11 @@
 import argparse
-from typing import Iterable
+from collections.abc import Iterable
 
-from agent1.agent import enrich_question, process_file as process_enricher_file
+from agent1.agent import enrich_question
+from agent1.agent import process_file as process_enricher_file
 from agent2.rag import process_file as process_rag_file
 from agent2.storage import ChromaRAGStore
+from common.config import get_settings
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -34,7 +36,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--persist-dir",
         help="Optional directory where the Chroma DB will persist.",
-        default="chroma_db",
+        default=None,
     )
     parser.add_argument(
         "--qid",
@@ -47,16 +49,17 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--subject",
         default="sql",
-        help="Subject domain for enrichment: sql, python, or dsa.",
+        help="Subject domain for enrichment: sql, python, javascript, react, dsa.",
     )
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
 def main(argv: Iterable[str] | None = None) -> None:
     args = parse_args(argv)
+    persist_dir = args.persist_dir or str(get_settings().chroma_persist_dir)
 
     if args.agent == "rag" and args.store:
-        rag_store = ChromaRAGStore.for_subject(args.subject, persist_dir=args.persist_dir)
+        rag_store = ChromaRAGStore.for_subject(args.subject, persist_dir=persist_dir)
     else:
         rag_store = None
 
