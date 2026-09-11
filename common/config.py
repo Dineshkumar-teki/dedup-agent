@@ -54,6 +54,7 @@ def _env_float(name: str, default: float) -> float:
 @dataclass(frozen=True)
 class Settings:
     openrouter_api_key: str
+    api_provider: str
     chroma_persist_dir: Path
     llm_model: str
     embedding_model: str
@@ -76,23 +77,46 @@ class Settings:
     def require_api_key(self) -> None:
         if not self.openrouter_api_key:
             raise RuntimeError(
-                "OPENROUTER_API_KEY is not set. Add it to .env, Streamlit secrets, "
-                "or export it before running."
+                "API key is not set. Add OPENAI_API_KEY or OPENROUTER_API_KEY to .env, "
+                "Streamlit secrets, or export it before running."
             )
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+    openrouter_key = _lookup("OPENROUTER_API_KEY", "") or ""
+    openai_key = _lookup("OPENAI_API_KEY", "") or ""
+    provider = (_lookup("API_PROVIDER") or "").strip().lower()
+
+    if provider == "openai":
+        api_key = openai_key or openrouter_key
+    elif provider == "openrouter":
+        api_key = openrouter_key or openai_key
+    elif openai_key:
+        api_key = openai_key
+        provider = "openai"
+    elif openrouter_key:
+        api_key = openrouter_key
+        provider = "openrouter"
+    else:
+        api_key = ""
+        provider = "openrouter"
+
     persist_dir = _lookup("CHROMA_PERSIST_DIR", "chroma_db")
     path = Path(persist_dir or "chroma_db")
     if not path.is_absolute():
         path = ROOT_DIR / path
 
+    default_llm_model = "gpt-4o-mini" if provider == "openai" else "google/gemini-3-flash-preview"
+    default_embedding_model = "text-embedding-3-large" if provider == "openai" else "openai/text-embedding-3-large"
+
     return Settings(
-        openrouter_api_key=_lookup("OPENROUTER_API_KEY", "") or "",
+        openrouter_api_key=api_key,
+        api_provider=provider,
         chroma_persist_dir=path,
-        llm_model=_lookup("LLM_MODEL", "google/gemini-3-flash-preview") or "google/gemini-3-flash-preview",
-        embedding_model=_lookup("EMBEDDING_MODEL", "openai/text-embedding-3-large") or "openai/text-embedding-3-large",
+        llm_model=_lookup("LLM_MODEL", default_llm_model) or default_llm_model,
+        embedding_model=_lookup("EMBEDDING_MODEL", default_embedding_model) or default_embedding_model,
         llm_temperature=_env_float("LLM_TEMPERATURE", 0.0),
         duplicate_distance_threshold=_env_float("DUPLICATE_DISTANCE_THRESHOLD", 0.25),
         enrich_concurrency=_env_int("ENRICH_CONCURRENCY", 10),

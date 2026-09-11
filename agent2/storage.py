@@ -70,9 +70,10 @@ class ChromaRAGStore:
         path.mkdir(parents=True, exist_ok=True)
 
         self.client = chromadb.PersistentClient(path=str(path))
+        base_url = "https://api.openai.com/v1" if settings.api_provider == "openai" else "https://openrouter.ai/api/v1"
         self.embedding = OpenAIEmbeddings(
             model=settings.embedding_model,
-            base_url="https://openrouter.ai/api/v1",
+            base_url=base_url,
             api_key=settings.openrouter_api_key,
         )
         self.collection = self.client.get_or_create_collection(

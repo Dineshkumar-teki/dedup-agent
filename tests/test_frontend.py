@@ -153,6 +153,16 @@ def test_check_pool_renders_and_validates_empty_question(isolated_settings: Path
     assert any("Please enter the question text." in str(item.value) for item in at.warning)
 
 
+def test_check_pool_defaults_missing_session_state(isolated_settings: Path) -> None:
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file("pages/check_pool.py", default_timeout=15)
+    at.run()
+
+    assert not at.exception
+    assert any("Check Pool" in str(item.value) for item in at.header)
+
+
 def test_app_login_gate_rejects_invalid_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

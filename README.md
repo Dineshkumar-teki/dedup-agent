@@ -24,7 +24,7 @@ LLM-powered question enrichment and vector-based deduplication for practice ques
 git clone <repo-url>
 cd sql-dedup-agent
 cp .env.example .env
-# Edit .env and set OPENROUTER_API_KEY
+# Edit .env and set OPENAI_API_KEY or OPENROUTER_API_KEY
 uv sync
 ```
 
@@ -55,7 +55,9 @@ All settings are loaded from environment variables (see `.env.example`).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENROUTER_API_KEY` | — | **Required.** OpenRouter API key |
+| `OPENAI_API_KEY` | — | Optional if using OpenRouter. For OpenAI requests, set this and optionally `API_PROVIDER=openai`. |
+| `OPENROUTER_API_KEY` | — | Optional if using OpenAI. For OpenRouter requests, set this and optionally `API_PROVIDER=openrouter`. |
+| `API_PROVIDER` | auto | `openai`, `openrouter`, or leave unset to auto-detect |
 | `APP_USERNAME` / `APP_PASSWORD` | — | Enable login gate when both are set |
 | `CHROMA_PERSIST_DIR` | `chroma_db` | Vector DB storage path |
 | `DUPLICATE_DISTANCE_THRESHOLD` | `0.25` | Cosine distance threshold (lower = stricter) |
@@ -73,21 +75,27 @@ docker compose up --build
 
 Chroma data is persisted in a Docker volume (`chroma_data`).
 
-## Deploy on Render
+## Deploy on Render (free)
 
-This app can run on [Render](https://render.com/) as a Docker web service. Chroma stays on a persistent disk.
+Skip **Blueprint** — that path is paid because it used a persistent disk.
+
+Use a free web service instead:
 
 1. Push this repo to GitHub.
-2. In Render, click **New → Blueprint** and select the repo (it reads `render.yaml`).
-3. Set these environment variables (do not commit them):
+2. In Render: **New → Web Service** (not Blueprint) → connect the repo.
+3. Settings:
+   - **Language:** Python
+   - **Instance type:** Free
+   - **Build command:** `pip install uv && uv sync --frozen --no-dev`
+   - **Start command:** `uv run streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless=true`
+4. Environment variables:
    - `OPENROUTER_API_KEY`
-   - `APP_USERNAME`
-   - `APP_PASSWORD`
-4. Deploy. The app will be at `https://<service-name>.onrender.com`.
+   - `APP_USERNAME` / `APP_PASSWORD` (optional but recommended)
+   - `PYTHON_VERSION` = `3.12.8`
 
-Use a **Starter** (paid) plan so the Chroma disk survives restarts. A free instance will lose the question pool when the service sleeps or restarts.
+On the free plan the app sleeps when idle, and the Chroma pool is **lost on restart**. That is fine for a demo. A paid instance + disk is only needed if you want the question bank to persist.
 
-**Vercel is not supported.** Vercel is serverless and has no persistent disk, so Streamlit + local Chroma cannot run there.
+**Vercel is not supported.** It is serverless and has no place to keep Chroma files.
 
 ## Deploy on Streamlit Community Cloud
 
@@ -154,7 +162,10 @@ User upload / manual entry
 uv sync --all-extras --dev
 uv run ruff check .
 uv run pytest -q
+uv run python -m evals
 ```
+
+Offline evals score enrichment rules, validation, and duplicate/unique pairs (0–100). Add `--live` to also score real LLM enrichment when `OPENROUTER_API_KEY` is set.
 
 ## Production checklist
 

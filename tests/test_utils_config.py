@@ -23,6 +23,7 @@ def test_find_column_matches_aliases() -> None:
 
 def test_settings_require_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("APP_USERNAME", raising=False)
     monkeypatch.delenv("APP_PASSWORD", raising=False)
     from common.config import get_settings
@@ -30,7 +31,7 @@ def test_settings_require_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     settings = get_settings()
     assert settings.auth_enabled is False
-    with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY is not set"):
+    with pytest.raises(RuntimeError, match="API key is not set"):
         settings.require_api_key()
 
 
@@ -42,6 +43,20 @@ def test_settings_auth_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
     get_settings.cache_clear()
     assert get_settings().auth_enabled is True
+
+
+def test_settings_detects_openai_key_and_defaults_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test-key")
+    monkeypatch.delenv("API_PROVIDER", raising=False)
+    from common.config import get_settings
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.api_provider == "openai"
+    assert settings.openrouter_api_key == "sk-proj-test-key"
+    assert settings.llm_model == "gpt-4o-mini"
+    assert settings.embedding_model == "text-embedding-3-large"
 
 
 def test_enrich_rows_parallel_collects_success_and_errors(monkeypatch: pytest.MonkeyPatch) -> None:

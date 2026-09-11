@@ -8,6 +8,7 @@ from app import (
     render_manual_entry_section,
     save_uploaded_file_to_temp,
 )
+from common.config import get_settings
 from common.enrichment import enrich_rows_parallel
 from common.io import load_questions_from_file
 from common.ui import (
@@ -71,6 +72,11 @@ def process_file(uploaded_file, subject: str, threshold: float):
 
 
 def show() -> None:
+    if "subject" not in st.session_state:
+        st.session_state["subject"] = "sql"
+    if "threshold" not in st.session_state:
+        st.session_state["threshold"] = float(get_settings().duplicate_distance_threshold)
+
     subject = st.session_state["subject"]
     threshold = st.session_state["threshold"]
 

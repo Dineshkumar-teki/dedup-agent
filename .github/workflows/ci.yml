@@ -29,3 +29,8 @@ jobs:
         run: uv run pytest -q
         env:
           OPENROUTER_API_KEY: test-key
+
+      - name: Evals
+        run: uv run python -m evals --min-score 85
+        env:
+          OPENROUTER_API_KEY: test-key

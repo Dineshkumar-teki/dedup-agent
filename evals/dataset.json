@@ -1,0 +1,298 @@
+{
+  "version": 1,
+  "description": "Labeled eval set for enrichment quality, validation, and duplicate detection.",
+  "enrichment_cases": [
+    {
+      "id": "sql-left-join",
+      "subject": "sql",
+      "qid": "Q1",
+      "raw_question": "Amazon SDE-2: Write a query using person and address tables to return first name, last name, city and state. Include people with no address.",
+      "gold_enriched": "LEFT JOIN of person and address preserving unmatched people and retrieving first name, last name, city, and state.",
+      "must_include": ["LEFT JOIN", "person", "address"],
+      "must_not_include": ["Amazon", "SELECT", "Q1"],
+      "must_start_with": ["LEFT JOIN"],
+      "expect_low_confidence": false
+    },
+    {
+      "id": "sql-second-salary",
+      "subject": "sql",
+      "qid": "Q2",
+      "raw_question": "Write a SQL query to get the second highest salary from the Employee table.",
+      "gold_enriched": "Ranking/window over employee salaries to select the second-highest salary value.",
+      "must_include": ["Ranking", "second"],
+      "must_not_include": ["SELECT", "Employee", "Q2"],
+      "must_start_with": ["Ranking"],
+      "expect_low_confidence": false
+    },
+    {
+      "id": "sql-group-by",
+      "subject": "sql",
+      "qid": "Q3",
+      "raw_question": "Find each customer's total order amount from Orders grouped by customer_id.",
+      "gold_enriched": "Aggregation grouping orders by customer to compute total order amount.",
+      "must_include": ["Aggregation", "customer"],
+      "must_not_include": ["SELECT", "GROUP BY", "Q3"],
+      "must_start_with": ["Aggregation"],
+      "expect_low_confidence": false
+    },
+    {
+      "id": "python-palindrome",
+      "subject": "python",
+      "qid": "P1",
+      "raw_question": "def is_pal(s): implement a function that returns True if string s is a palindrome.",
+      "gold_enriched": "Implement a function that checks whether a string reads the same forwards and backwards.",
+      "must_include": ["Implement", "string"],
+      "must_not_include": ["def ", "P1"],
+      "must_start_with": ["Implement"],
+      "expect_low_confidence": false
+    },
+    {
+      "id": "dsa-two-sum",
+      "subject": "dsa",
+      "qid": "D1",
+      "raw_question": "LeetCode Easy: Given an array of integers nums and a target, return indices of the two numbers that add up to target.",
+      "gold_enriched": "Array two-sum problem finding a pair of values that add to a target.",
+      "must_include": ["two-sum", "target"],
+      "must_not_include": ["LeetCode", "nums", "D1"],
+      "must_start_with": ["Array"],
+      "expect_low_confidence": false
+    },
+    {
+      "id": "sql-ambiguous",
+      "subject": "sql",
+      "qid": "Q99",
+      "raw_question": "Fix the query.",
+      "gold_enriched": "Unspecified SQL repair task with no operation, tables, or expected result described. [LOW_CONFIDENCE]",
+      "must_include": ["[LOW_CONFIDENCE]"],
+      "must_not_include": ["Q99"],
+      "must_start_with": [],
+      "expect_low_confidence": true
+    }
+  ],
+  "dedup_pairs": [
+    {
+      "id": "dup-second-salary",
+      "subject": "sql",
+      "label": "duplicate",
+      "anchor": {
+        "qid": "A1",
+        "raw": "Write a SQL query to get the second highest salary from the Employee table.",
+        "enriched": "Ranking/window over employee salaries to select the second-highest salary value."
+      },
+      "candidate": {
+        "qid": "C1",
+        "raw": "Find the 2nd max salary of employees.",
+        "enriched": "Ranking/window over employee salaries to select the second-highest salary value."
+      }
+    },
+    {
+      "id": "dup-left-join-paraphrase",
+      "subject": "sql",
+      "label": "duplicate",
+      "anchor": {
+        "qid": "A2",
+        "raw": "Return all people and their city/state, keeping people with no address.",
+        "enriched": "LEFT JOIN of person and address preserving unmatched people and retrieving first name, last name, city, and state."
+      },
+      "candidate": {
+        "qid": "C2",
+        "raw": "List every person with address details if present; include persons without an address row.",
+        "enriched": "LEFT JOIN of person and address preserving unmatched people and retrieving name, city, and state."
+      }
+    },
+    {
+      "id": "dup-python-palindrome",
+      "subject": "python",
+      "label": "duplicate",
+      "anchor": {
+        "qid": "A3",
+        "raw": "Check if a string is a palindrome.",
+        "enriched": "Implement a function that checks whether a string reads the same forwards and backwards."
+      },
+      "candidate": {
+        "qid": "C3",
+        "raw": "Write a function that returns true when the input string is the same reversed.",
+        "enriched": "Implement a function that checks whether a string reads the same forwards and backwards."
+      }
+    },
+    {
+      "id": "dup-two-sum",
+      "subject": "dsa",
+      "label": "duplicate",
+      "anchor": {
+        "qid": "A4",
+        "raw": "Return indices of two numbers that add up to target.",
+        "enriched": "Array two-sum problem finding a pair of values that add to a target."
+      },
+      "candidate": {
+        "qid": "C4",
+        "raw": "Find two integers in an array whose sum equals a given target.",
+        "enriched": "Array two-sum problem finding two values that add to a target."
+      }
+    },
+    {
+      "id": "dup-js-promise",
+      "subject": "javascript",
+      "label": "duplicate",
+      "anchor": {
+        "qid": "A5",
+        "raw": "Implement a function that returns a Promise resolving after a delay.",
+        "enriched": "Implement a function that returns a Promise which resolves after a delay."
+      },
+      "candidate": {
+        "qid": "C5",
+        "raw": "Write a helper that yields a resolved promise once timeout completes.",
+        "enriched": "Implement a function that returns a Promise resolving after a timeout delay."
+      }
+    },
+    {
+      "id": "unique-inner-vs-left",
+      "subject": "sql",
+      "label": "unique",
+      "anchor": {
+        "qid": "A6",
+        "raw": "Inner join person and address; drop people with no address.",
+        "enriched": "INNER JOIN of person and address dropping unmatched people and retrieving name, city, and state."
+      },
+      "candidate": {
+        "qid": "C6",
+        "raw": "Left join person and address; keep people with no address.",
+        "enriched": "LEFT JOIN of person and address preserving unmatched people and retrieving name, city, and state."
+      }
+    },
+    {
+      "id": "unique-second-vs-third-salary",
+      "subject": "sql",
+      "label": "unique",
+      "anchor": {
+        "qid": "A7",
+        "raw": "Find the second highest salary.",
+        "enriched": "Ranking/window over employee salaries to select the second-highest salary value."
+      },
+      "candidate": {
+        "qid": "C7",
+        "raw": "Find the third highest salary.",
+        "enriched": "Ranking/window over employee salaries to select the third-highest salary value."
+      }
+    },
+    {
+      "id": "unique-group-grain",
+      "subject": "sql",
+      "label": "unique",
+      "anchor": {
+        "qid": "A8",
+        "raw": "Total spend per customer.",
+        "enriched": "Aggregation grouping orders by customer to compute total order amount."
+      },
+      "candidate": {
+        "qid": "C8",
+        "raw": "Total spend per day.",
+        "enriched": "Aggregation grouping orders by calendar day to compute daily total order amount."
+      }
+    },
+    {
+      "id": "unique-two-vs-three-sum",
+      "subject": "dsa",
+      "label": "unique",
+      "anchor": {
+        "qid": "A9",
+        "raw": "Two sum.",
+        "enriched": "Array two-sum problem finding a pair of values that add to a target."
+      },
+      "candidate": {
+        "qid": "C9",
+        "raw": "Three sum.",
+        "enriched": "Array three-sum problem finding a triplet of values that add to a target."
+      }
+    },
+    {
+      "id": "unique-palindrome-vs-anagram",
+      "subject": "python",
+      "label": "unique",
+      "anchor": {
+        "qid": "A10",
+        "raw": "Check palindrome string.",
+        "enriched": "Implement a function that checks whether a string reads the same forwards and backwards."
+      },
+      "candidate": {
+        "qid": "C10",
+        "raw": "Check if two strings are anagrams.",
+        "enriched": "Implement a function that checks whether two strings contain the same characters in any order."
+      }
+    },
+    {
+      "id": "unique-react-vs-js",
+      "subject": "react",
+      "label": "unique",
+      "anchor": {
+        "qid": "A11",
+        "raw": "Build a React component that fetches and renders a user list.",
+        "enriched": "Implement a React component that fetches a list of users and renders them."
+      },
+      "candidate": {
+        "qid": "C11",
+        "raw": "Use useState to toggle a boolean in a React component.",
+        "enriched": "Implement a React component that toggles boolean state with a state hook."
+      }
+    },
+    {
+      "id": "unique-self-join-vs-inner",
+      "subject": "sql",
+      "label": "unique",
+      "anchor": {
+        "qid": "A12",
+        "raw": "Find employees who earn more than their manager using a self join.",
+        "enriched": "Self-join of employee comparing salary against the related manager salary."
+      },
+      "candidate": {
+        "qid": "C12",
+        "raw": "Join employees to departments and list department names.",
+        "enriched": "INNER JOIN of employee and department retrieving employee name and department name."
+      }
+    }
+  ],
+  "validation_cases": [
+    {
+      "id": "catch-qid-leak",
+      "qid": "Q1",
+      "subject": "sql",
+      "enriched": "Question Q1 asks about joins.",
+      "should_flag": true
+    },
+    {
+      "id": "catch-sql-syntax",
+      "qid": "Q1",
+      "subject": "sql",
+      "enriched": "Write SELECT name FROM users.",
+      "should_flag": true
+    },
+    {
+      "id": "catch-low-confidence",
+      "qid": "Q1",
+      "subject": "sql",
+      "enriched": "Unclear task. [LOW_CONFIDENCE]",
+      "should_flag": true
+    },
+    {
+      "id": "catch-python-syntax",
+      "qid": "P1",
+      "subject": "python",
+      "enriched": "Use def helper to compute totals.",
+      "should_flag": true
+    },
+    {
+      "id": "allow-clean-sql",
+      "qid": "Q1",
+      "subject": "sql",
+      "enriched": "Combine person and address rows while preserving unmatched people.",
+      "should_flag": false
+    },
+    {
+      "id": "allow-clean-python",
+      "qid": "P1",
+      "subject": "python",
+      "enriched": "Implement a check that a string reads the same forwards and backwards.",
+      "should_flag": false
+    }
+  ]
+}

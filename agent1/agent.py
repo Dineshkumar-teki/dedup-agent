@@ -32,10 +32,11 @@ def build_enricher() -> ChatOpenAI:
     settings = get_settings()
     settings.require_api_key()
 
+    base_url = "https://api.openai.com/v1" if settings.api_provider == "openai" else "https://openrouter.ai/api/v1"
     model = ChatOpenAI(
         model=settings.llm_model,
         temperature=settings.llm_temperature,
-        base_url="https://openrouter.ai/api/v1",
+        base_url=base_url,
         api_key=settings.openrouter_api_key,
     )
     return model.with_structured_output(EnrichedQuestion)

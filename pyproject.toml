@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 sql-dedup = "common.cli:main"
+sql-dedup-eval = "evals.runner:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

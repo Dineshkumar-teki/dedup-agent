@@ -1,10 +1,14 @@
 services:
   - type: web
     name: sql-dedup-agent
-    runtime: docker
-    plan: starter
+    runtime: python
+    plan: free
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless=true
     healthCheckPath: /
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
       - key: OPENROUTER_API_KEY
         sync: false
       - key: APP_USERNAME
@@ -12,8 +16,4 @@ services:
       - key: APP_PASSWORD
         sync: false
       - key: CHROMA_PERSIST_DIR
-        value: /data/chroma_db
-    disk:
-      name: chroma-data
-      mountPath: /data/chroma_db
-      sizeGB: 1
+        value: chroma_db
